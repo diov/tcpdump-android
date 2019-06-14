@@ -14,10 +14,11 @@
 # --------------------------------------
 
 tcpdump_ver=4.9.2
-libpcap_ver=1.8.1
-android_api_def=16
-toolchain=arm-linux-androideabi-4.9
-ndk_dir_def=ndk-r17b #change your ndk path here
+libpcap_ver=1.9.0
+android_api_def=21
+toolchain_abi=arm
+ndk_dir_def=ndk-r19c #change your ndk path here
+bin_dir=armeabi
 
 #-------------------------------------------------------#
 
@@ -25,16 +26,21 @@ tcpdump_dir=tcpdump-${tcpdump_ver}
 libpcap_dir=libpcap-${libpcap_ver}
 
 
-if [ ${NDK} ]
+if [[ ${NDK} ]]
 then
 	ndk_dir=${NDK}
 else
 	ndk_dir=${ndk_dir_def}
 fi
 
-ndk_dir=`readlink -f ${ndk_dir}`
+if [[ "$(uname -s)" = 'Linux' ]]
+then
+	ndk_dir=$(readlink -f ${ndk_dir})
+else
+	ndk_dir=$(perl -e 'use Cwd "abs_path";print abs_path(shift)' "${ndk_dir}")
+fi
 
-if [ ${ANDROID_API} ]
+if [[ ${ANDROID_API} ]]
 then
 	android_api=${ANDROID_API}
 else
@@ -42,7 +48,6 @@ else
 fi
 
 echo "_______________________"
-echo ""
 echo "NDK - ${ndk_dir}"
 echo "Android API: ${android_api}"
 echo "_______________________"
@@ -58,55 +63,56 @@ exit_error()
 }
 
 {
-	if [ $# -ne 0 ]
+	if [[ $# -ne 0 ]]
 	then
-		if [ -d $1 ]
+		if [[ -d $1 ]]
 		then
-			cd $1
+			cd "$1" || return
 		else
-			echo directory $1 not found
+			echo directory "$1" not found
 			exit_error
 		fi
 	else
 		mkdir tcpdumpbuild
-		cd tcpdumpbuild
+		cd tcpdumpbuild || return
 	fi
 }
 
 
-
+# Prepare toolchains
 {
 	echo " ____________________"
 	echo "|                    |"
 	echo "| TOOLCHAIN          |"
 	echo "|____________________|"
-
-	if [ -d toolchain ]
+	
+	toolchain=toolchain/${toolchain_abi}
+	if [[ -d toolchain ]]
 	then
 		echo Toolchain already exist! Nothing to do.
 	else
 		echo Creating toolchain...
-		mkdir toolchain
-		bash ${ndk_dir}/build/tools/make-standalone-toolchain.sh --force --toolchain=${toolchain} --platform=android-${android_api} --install-dir=toolchain
+		mkdir -p ${toolchain}
 		
-		if [ $? -ne 0 ]
+		if ! "${ndk_dir}"/build/tools/make_standalone_toolchain.py --arch=${toolchain_abi} --api=${android_api} --install-dir=${toolchain}  --force
 		then
-			rm -fr toolchain
+			rm -fr ${toolchain}
 			exit_error
 		fi
 	fi
-	
-	export PATH=`pwd`/toolchain/bin:$PATH
+
+	PATH=$(pwd)/${toolchain}/bin:$PATH
+    export PATH
 
 	target_host=arm-linux-androideabi
-    export AR=$target_host-ar
-    export AS=$target_host-clang
-    export CC=$target_host-clang
-    export CXX=$target_host-clang++
-    export LD=$target_host-ld
-    export STRIP=$target_host-strip
-	export RANLIB=$target_host-ranlib
-	export STRIP=$target_host-strip
+    export AR=${target_host}-ar
+    export AS=${target_host}-clang
+    export CC=${target_host}-clang
+    export CXX=${target_host}-clang++
+    export LD=${target_host}-ld
+    export STRIP=${target_host}-strip
+	export RANLIB=${target_host}-ranlib
+	export STRIP=${target_host}-strip
 	export CFLAGS="-static -O2 -fPIE -fPIC -march=armv7-a -mthumb -mfloat-abi=softfp -mfpu=vfpv3-d16 -mfpu=neon -march=armv7-a -Wl,--fix-cortex-a8"
     export LDFLAGS="-pie"
 }
@@ -118,62 +124,81 @@ exit_error()
 	echo "| DOWNLOADING LIBPCAP & TCPDUMP |"
 	echo "|_______________________________|"
 	
+	asc_file=signing-key.asc
 	tcpdump_file=${tcpdump_dir}.tar.gz
 	libpcap_file=${libpcap_dir}.tar.gz
+	public_asc=http://www.tcpdump.org/release/${asc_file}
 	tcpdump_link=http://www.tcpdump.org/release/${tcpdump_file}
 	libpcap_link=http://www.tcpdump.org/release/${libpcap_file}
 	
-	if [ -f ${tcpdump_file} ]
+	if [[ -f ${asc_file} ]]
+	then
+		echo ${asc_file} already downloaded! Nothing to do.
+	else
+		echo Download ${asc_file}...
+		wget ${public_asc}
+		if [[ ! -f ${asc_file} ]]
+		then
+			exit_error
+		fi
+	fi
+
+	if ! gpg --import ${asc_file}
+	then
+		exit_error
+	fi
+
+	if [[ -f ${tcpdump_file} ]]
 	then
 		echo ${tcpdump_file} already downloaded! Nothing to do.
 	else
 		echo Download ${tcpdump_file}...
 		wget ${tcpdump_link}
 		wget ${tcpdump_link}.sig
-		if [ ! -f ${tcpdump_file} ]
+		if [[ ! -f ${tcpdump_file} ]]
 		then
 			exit_error
 		fi
 	fi
 
-	gpg --verify ${tcpdump_file}.sig
-	if [ $? -ne 0 ]
+	if ! gpg --verify ${tcpdump_file}.sig
 	then
 		exit_error
 	fi
 
 	
-	if [ -f ${libpcap_file} ]
+	if [[ -f ${libpcap_file} ]]
 	then
 		echo ${libpcap_file} already downloaded! Nothing to do.
 	else
 		echo Download ${libpcap_file}...
 		wget ${libpcap_link}
 		wget ${libpcap_link}.sig
-		if [ ! -f ${libpcap_file} ]
+		if [[ ! -f ${libpcap_file} ]]
 		then
 			exit_error
 		fi
 	fi
 
-	gpg --verify ${libpcap_file}.sig
-	if [ $? -ne 0 ]
+	if ! gpg --verify ${libpcap_file}.sig
 	then
 		exit_error
 	fi
 
 	
-	if [ -d ${tcpdump_dir} ]
+	if [[ -d ${tcpdump_dir} ]]
 	then
-		echo ${tcpdump_dir} directory already exist! Nothing to do.
+		make clean -C ${tcpdump_dir}
+		echo ${tcpdump_dir} directory already exist! Clean previous configure.
 	else
 		echo untar ${tcpdump_file}
 		tar -zxf ${tcpdump_file}
 	fi
 	
-	if [ -d ${libpcap_dir} ]
+	if [[ -d ${libpcap_dir} ]]
 	then
-		echo ${libpcap_dir} directory already exist! Nothing to do.
+		make clean -C ${libpcap_dir}
+		echo ${libpcap_dir} directory already exist! Clean previous configure.
 	else
 		echo untar ${libpcap_file}
 		tar -zxf ${libpcap_file}
@@ -182,17 +207,16 @@ exit_error()
 
 # build libpcap
 {
-	cd ${libpcap_dir}
+	cd "${libpcap_dir}" || return
 
 	echo " _____________________"
 	echo "|                     |"
 	echo "| CONFIGURING LIBPCAP |"
 	echo "|_____________________|"
-	
-	chmod +x configure
-	./configure --host=arm-linux-androideabi --with-pcap=linux
 
-	if [ $? -ne 0 ]
+	chmod +x configure
+
+	if ! ./configure --host=armv7a-linux-androideabi --with-pcap=linux
 	then
 		exit_error
 	fi	
@@ -203,19 +227,18 @@ exit_error()
 	echo "|__________________|"
 
 	chmod +x runlex.sh
-	make
-
-	if [ $? -ne 0 ]
+	
+	if ! make
 	then
 		exit_error
 	fi
 
-	cd ..
+    cd ..
 }
 
 # build tcpdump
 {
-	cd ${tcpdump_dir}
+	cd ${tcpdump_dir} || return
 	
 	echo " _____________________"
 	echo "|                     |"
@@ -223,9 +246,8 @@ exit_error()
 	echo "|_____________________|"
 	
 	chmod +x configure
-	./configure --host=arm-linux-androideabi --with-pcap=linux
 
-	if [ $? -ne 0 ]
+	if ! ./configure --host=arm-linux-androideabi --with-pcap=linux
 	then
 		exit_error
 	fi	
@@ -240,9 +262,8 @@ exit_error()
 	sed -i".bak" "s/endprotoent/\/\/endprotoent/g" print-isakmp.c
 
 	#NBBY is not defined => FORCE definition
-	make #CFLAGS=-DNBBY=8 # for tcpdump < 4.2.1 (CFLAGS refefined in Makefile) => just make
 	
-	if [ $? -ne 0 ]
+	if ! make #CFLAGS=-DNBBY=8 # for tcpdump < 4.2.1 (CFLAGS refefined in Makefile) => just make
 	then
 		exit_error
 	fi
@@ -250,8 +271,12 @@ exit_error()
 	cd ..
 }
 
-cp ${tcpdump_dir}/tcpdump .
-chmod +x tcpdump
+mkdir -p ${bin_dir}
+cp ${tcpdump_dir}/tcpdump ./${bin_dir}
+chmod +x ./${bin_dir}/tcpdump
 
+echo " __________________"
+echo "|                  |"
 echo "| TCPDUMP IS READY |"
-echo `pwd`/tcpdump
+echo "|__________________|"
+echo "$(pwd)"/${bin_dir}/tcpdump
